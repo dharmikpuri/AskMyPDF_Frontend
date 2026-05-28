@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { loginUser } from "../api/auth";
+import { toast } from "react-toastify";
 import Theme from "./Theme";
 
 const AuthStyles = () => (
@@ -68,7 +69,6 @@ export default function Login() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -78,22 +78,23 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!email || !password) {
-      setError("Email and password are required");
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !password) {
+      toast.info("Email and password are required");
       return;
     }
 
     setLoading(true);
-    setError("");
-    const result = await loginUser({ email, password });
+    const result = await loginUser({ email: cleanEmail, password });
     if (result?.success && result?.token) {
       localStorage.setItem("token", result.token);
       if (result?.user) {
         localStorage.setItem("user", JSON.stringify(result.user));
       }
       navigate("/");
+      toast.success("Logged in successfully");
     } else {
-      setError(result?.message || "Login failed");
+      toast.error(result?.message || "Login failed");
     }
     setLoading(false);
   };
@@ -130,10 +131,6 @@ export default function Login() {
                 onChange={(e) => setPassword(e.target.value)}
               />
             </div>
-
-            {error && (
-              <div className="auth-row" style={{ color: "#f87171" }}>{error}</div>
-            )}
 
             <button className="auth-btn" type="submit" disabled={loading}>
               {loading ? "Logging in..." : "Login"}

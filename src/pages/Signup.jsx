@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { signupUser } from "../api/auth";
+import { toast } from "react-toastify";
 import Theme from "./Theme";
 
 const AuthStyles = () => (
@@ -69,27 +70,28 @@ export default function Signup() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!name || !email || !password) {
-      setError("Name, email, and password are required");
+    const cleanName = name.trim();
+    const cleanEmail = email.trim();
+    if (!cleanName || !cleanEmail || !password) {
+      toast.info("Name, email, and password are required");
       return;
     }
 
     setLoading(true);
-    setError("");
-    const result = await signupUser({ name, email, password });
+    const result = await signupUser({ name: cleanName, email: cleanEmail, password });
     if (result?.success && result?.token) {
       localStorage.setItem("token", result.token);
       if (result?.user) {
         localStorage.setItem("user", JSON.stringify(result.user));
       }
       navigate("/");
+      toast.success("Account created");
     } else {
-      setError(result?.message || "Signup failed");
+      toast.error(result?.message || "Signup failed");
     }
     setLoading(false);
   };
@@ -137,10 +139,6 @@ export default function Signup() {
                 onChange={(e) => setPassword(e.target.value)}
               />
             </div>
-
-            {error && (
-              <div className="auth-row" style={{ color: "#f87171" }}>{error}</div>
-            )}
 
             <button className="auth-btn" type="submit" disabled={loading}>
               {loading ? "Creating..." : "Sign up"}
