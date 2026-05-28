@@ -80,6 +80,36 @@ const Theme = () => (
       display: flex; flex-direction: column; overflow: hidden;
     }
 
+    .user-card {
+      padding: 16px;
+      border-top: 1px solid rgba(255,255,255,0.07);
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      margin-top: auto;
+    }
+    .user-text {
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .user-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.58rem; color: rgba(255,255,255,0.35);
+      text-transform: uppercase; letter-spacing: 1.5px;
+    }
+    .user-name {
+      font-size: 0.85rem; font-weight: 600; color: rgba(255,255,255,0.9);
+    }
+    .logout-btn {
+      background: linear-gradient(135deg, rgba(248,113,113,0.9), rgba(239,68,68,0.9));
+      border: 1px solid rgba(248,113,113,0.6);
+      color: #fff; font-size: 0.7rem; padding: 6px 10px;
+      border-radius: 10px; cursor: pointer; transition: all 0.15s;
+      white-space: nowrap;
+      box-shadow: 0 6px 18px rgba(248,113,113,0.35), inset 0 1px 0 rgba(255,255,255,0.2);
+    }
+    .logout-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 24px rgba(248,113,113,0.45), inset 0 1px 0 rgba(255,255,255,0.25);
+    }
+
     .up-section {
       padding: 18px 16px;
       border-bottom: 1px solid rgba(255,255,255,0.07);

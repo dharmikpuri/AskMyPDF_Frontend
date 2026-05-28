@@ -88,6 +88,9 @@ export default function Login() {
     const result = await loginUser({ email, password });
     if (result?.success && result?.token) {
       localStorage.setItem("token", result.token);
+      if (result?.user) {
+        localStorage.setItem("user", JSON.stringify(result.user));
+      }
       navigate("/");
     } else {
       setError(result?.message || "Login failed");

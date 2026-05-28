@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import apiClient from "../api/config";
 import Theme from "./Theme";
 
@@ -7,6 +8,7 @@ const fmtDate = (iso) => new Date(iso).toLocaleDateString("en-IN", {
 });
 
 export default function Home() {
+  const navigate = useNavigate();
   const [message, setMessage]     = useState("");
   const [messages, setMessages]   = useState([]);
   const [pdf, setPdf]             = useState(null);
@@ -17,9 +19,19 @@ export default function Home() {
   const [selected, setSelected]   = useState(null);
   const [docsLoad, setDocsLoad]   = useState(false);
   const [deletingId, setDelId]    = useState(null);
+  const [userName, setUserName]   = useState("User");
   const endRef = useRef(null);
 
-  useEffect(() => { fetchDocs(); fetchChats(); }, []);
+  useEffect(() => {
+    const user = localStorage.getItem("user");
+    if (user) {
+      try {
+        const parsed = JSON.parse(user);
+        if (parsed?.name) setUserName(parsed.name);
+      } catch { /* ignore parse errors */ }
+    }
+    fetchDocs();
+  }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
 
   const fetchDocs = async () => {
@@ -31,20 +43,44 @@ export default function Home() {
     finally { setDocsLoad(false); }
   };
 
-  const fetchChats = async () => {
+  const fetchChats = async (documentId) => {
     try {
-      const r = await apiClient.get("/chats");
-      const history = r.data?.messages || r.data?.chats || [];
+      if (!documentId) {
+        setMessages([]);
+        return;
+      }
+      const r = await apiClient.get("/chats", { params: { documentId } });
+      const history = normalizeChatHistory(r.data);
       if (Array.isArray(history)) setMessages(history);
     } catch (e) { console.log(e); }
   };
 
+  const normalizeChatHistory = (data) => {
+    const list = data?.messages || data?.chats || data || [];
+    if (!Array.isArray(list)) return [];
+    if (list.length === 0) return [];
+    if (list[0]?.role && list[0]?.text) return list;
+    if (list[0]?.message?.role && list[0]?.message?.text) {
+      return list.map(item => item.message).filter(Boolean);
+    }
+    return list
+      .filter(item => item?.role && item?.text)
+      .map(item => ({ role: item.role, text: item.text }));
+  };
+
   const clearChat = async () => {
+    if (!selected?.documentId) return;
     if (!window.confirm("Clear chat history?")) return;
     try {
-      await apiClient.delete("/chats");
+      await apiClient.delete("/chats", { params: { documentId: selected.documentId } });
       setMessages([]);
     } catch (e) { console.log(e); alert("Clear chat failed"); }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    navigate("/login");
   };
 
   const uploadPdf = async () => {
@@ -58,14 +94,19 @@ export default function Home() {
       if (r.data.success) {
         setStatus("ok"); setPdf(null);
         await fetchDocs();
-        setSelected({ documentId: r.data.documentId, fileName: r.data.fileName });
-        setMessages([]);
+        const nextDoc = { documentId: r.data.documentId, fileName: r.data.fileName };
+        setSelected(nextDoc);
+        fetchChats(nextDoc.documentId);
       }
     } catch (e) { console.log(e); setStatus("fail"); }
     finally { setUploading(false); }
   };
 
-  const selectDoc = (doc) => { setSelected(doc); setMessages([]); setStatus(null); };
+  const selectDoc = (doc) => {
+    setSelected(doc);
+    setStatus(null);
+    fetchChats(doc.documentId);
+  };
 
   const deleteDoc = async (e, doc) => {
     e.stopPropagation();
@@ -88,9 +129,13 @@ export default function Home() {
       const r = await apiClient.post("/ask-pdf", {
         question: q, documentId: selected.documentId,
       });
+      const aiText = r.data?.answer || r.data?.reply || "";
       setMessages(p => {
-        const updated = [...p, { role: "ai", text: r.data.answer }];
-        apiClient.post("/chat", { messages: updated }).catch(console.log);
+        const updated = [...p, { role: "ai", text: aiText }];
+        apiClient.post("/chat", {
+          documentId: selected.documentId,
+          messages: updated,
+        }).catch(console.log);
         return updated;
       });
     } catch (e) { console.log(e); }
@@ -109,8 +154,8 @@ export default function Home() {
         {/* TOPBAR */}
         <header className="topbar">
           <div style={{ display: "flex", alignItems: "center" }}>
-            <span className="logo">✦ AI PDF CHAT APP</span>
-            <span className="logo-sub">RAG · PDF</span>
+            <span className="logo">✦ AskMyPDF</span>
+            {/* <span className="logo-sub">RAG · PDF</span> */}
           </div>
           <div className="top-right">
             <span className="live-dot" /> gemini-embedding-2 · mongodb atlas
@@ -175,6 +220,13 @@ export default function Home() {
                 </div>
               ))}
             </div>
+          </div>
+          <div className="user-card">
+            <div className="user-text">
+              <span className="user-label">Welcome</span>
+              <span className="user-name">{userName}</span>
+            </div>
+            <button className="logout-btn" onClick={handleLogout}>Logout</button>
           </div>
         </aside>
 
