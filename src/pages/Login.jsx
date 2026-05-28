@@ -1,4 +1,6 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { loginUser } from "../api/auth";
 import Theme from "./Theme";
 
 const AuthStyles = () => (
@@ -63,6 +65,36 @@ const AuthStyles = () => (
 );
 
 export default function Login() {
+  const navigate = useNavigate();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (token) navigate("/");
+  }, [navigate]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!email || !password) {
+      setError("Email and password are required");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    const result = await loginUser({ email, password });
+    if (result?.success && result?.token) {
+      localStorage.setItem("token", result.token);
+      navigate("/");
+    } else {
+      setError(result?.message || "Login failed");
+    }
+    setLoading(false);
+  };
+
   return (
     <>
       <Theme />
@@ -72,16 +104,38 @@ export default function Login() {
           <div className="auth-title">Welcome back</div>
           <div className="auth-sub">Login to continue</div>
 
-          <div className="auth-field">
-            <label className="auth-label" htmlFor="email">Email</label>
-            <input id="email" type="email" className="auth-input" placeholder="you@email.com" />
-          </div>
-          <div className="auth-field">
-            <label className="auth-label" htmlFor="password">Password</label>
-            <input id="password" type="password" className="auth-input" placeholder="••••••••" />
-          </div>
+          <form onSubmit={handleSubmit}>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="email">Email</label>
+              <input
+                id="email"
+                type="email"
+                className="auth-input"
+                placeholder="you@email.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                className="auth-input"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
 
-          <button className="auth-btn" type="button">Login</button>
+            {error && (
+              <div className="auth-row" style={{ color: "#f87171" }}>{error}</div>
+            )}
+
+            <button className="auth-btn" type="submit" disabled={loading}>
+              {loading ? "Logging in..." : "Login"}
+            </button>
+          </form>
 
           <div className="auth-row">
             New here? <Link className="auth-link" to="/singup">Create an account</Link>

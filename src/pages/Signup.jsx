@@ -1,4 +1,6 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { signupUser } from "../api/auth";
 import Theme from "./Theme";
 
 const AuthStyles = () => (
@@ -63,6 +65,32 @@ const AuthStyles = () => (
 );
 
 export default function Signup() {
+  const navigate = useNavigate();
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!name || !email || !password) {
+      setError("Name, email, and password are required");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    const result = await signupUser({ name, email, password });
+    if (result?.success && result?.token) {
+      localStorage.setItem("token", result.token);
+      navigate("/");
+    } else {
+      setError(result?.message || "Signup failed");
+    }
+    setLoading(false);
+  };
+
   return (
     <>
       <Theme />
@@ -72,20 +100,49 @@ export default function Signup() {
           <div className="auth-title">Create your account</div>
           <div className="auth-sub">Start chatting with PDFs</div>
 
-          <div className="auth-field">
-            <label className="auth-label" htmlFor="name">Full name</label>
-            <input id="name" type="text" className="auth-input" placeholder="Your name" />
-          </div>
-          <div className="auth-field">
-            <label className="auth-label" htmlFor="email">Email</label>
-            <input id="email" type="email" className="auth-input" placeholder="you@email.com" />
-          </div>
-          <div className="auth-field">
-            <label className="auth-label" htmlFor="password">Password</label>
-            <input id="password" type="password" className="auth-input" placeholder="Create a password" />
-          </div>
+          <form onSubmit={handleSubmit}>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="name">Full name</label>
+              <input
+                id="name"
+                type="text"
+                className="auth-input"
+                placeholder="Your name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="email">Email</label>
+              <input
+                id="email"
+                type="email"
+                className="auth-input"
+                placeholder="you@email.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                className="auth-input"
+                placeholder="Create a password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
 
-          <button className="auth-btn" type="button">Sign up</button>
+            {error && (
+              <div className="auth-row" style={{ color: "#f87171" }}>{error}</div>
+            )}
+
+            <button className="auth-btn" type="submit" disabled={loading}>
+              {loading ? "Creating..." : "Sign up"}
+            </button>
+          </form>
 
           <div className="auth-row">
             Already have an account? <Link className="auth-link" to="/login">Login</Link>

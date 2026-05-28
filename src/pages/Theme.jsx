@@ -213,12 +213,20 @@ const Theme = () => (
 
     .chat-hdr {
       height: 58px; padding: 0 28px;
-      display: flex; align-items: center; gap: 10px;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
       border-bottom: 1px solid rgba(255,255,255,0.07);
       backdrop-filter: blur(20px);
       background: rgba(255,255,255,0.02);
       flex-shrink: 0;
     }
+    .chat-actions { display: flex; align-items: center; gap: 8px; }
+    .clear-chat {
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+      color: rgba(255,255,255,0.65); font-size: 0.7rem; padding: 6px 10px;
+      border-radius: 10px; cursor: pointer; transition: all 0.15s;
+    }
+    .clear-chat:hover:not(:disabled) { background: rgba(255,255,255,0.12); color: #fff; }
+    .clear-chat:disabled { opacity: 0.35; cursor: not-allowed; }
     .chat-hdr-pill {
       display: flex; align-items: center; gap: 7px;
       font-size: 0.75rem; font-weight: 600; color: #c084fc;

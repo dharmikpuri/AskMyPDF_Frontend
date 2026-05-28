@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import axios from "axios";
+import apiClient from "../api/config";
 import Theme from "./Theme";
 
 const fmtDate = (iso) => new Date(iso).toLocaleDateString("en-IN", {
@@ -19,16 +19,32 @@ export default function Home() {
   const [deletingId, setDelId]    = useState(null);
   const endRef = useRef(null);
 
-  useEffect(() => { fetchDocs(); }, []);
+  useEffect(() => { fetchDocs(); fetchChats(); }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
 
   const fetchDocs = async () => {
     try {
       setDocsLoad(true);
-      const r = await axios.get("http://localhost:5000/documents");
+      const r = await apiClient.get("/documents");
       if (r.data.success) setDocuments(r.data.documents);
     } catch (e) { console.log(e); }
     finally { setDocsLoad(false); }
+  };
+
+  const fetchChats = async () => {
+    try {
+      const r = await apiClient.get("/chats");
+      const history = r.data?.messages || r.data?.chats || [];
+      if (Array.isArray(history)) setMessages(history);
+    } catch (e) { console.log(e); }
+  };
+
+  const clearChat = async () => {
+    if (!window.confirm("Clear chat history?")) return;
+    try {
+      await apiClient.delete("/chats");
+      setMessages([]);
+    } catch (e) { console.log(e); alert("Clear chat failed"); }
   };
 
   const uploadPdf = async () => {
@@ -36,7 +52,9 @@ export default function Home() {
     try {
       setUploading(true); setStatus(null);
       const fd = new FormData(); fd.append("pdf", pdf);
-      const r = await axios.post("http://localhost:5000/upload-pdf", fd);
+      const r = await apiClient.post("/upload-pdf", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
       if (r.data.success) {
         setStatus("ok"); setPdf(null);
         await fetchDocs();
@@ -54,7 +72,7 @@ export default function Home() {
     if (!window.confirm(`Delete "${doc.fileName}"? This cannot be undone.`)) return;
     try {
       setDelId(doc.documentId);
-      await axios.delete(`http://localhost:5000/documents/${doc.documentId}`);
+      await apiClient.delete(`/documents/${doc.documentId}`);
       if (selected?.documentId === doc.documentId) { setSelected(null); setMessages([]); }
       await fetchDocs();
     } catch (e) { console.log(e); alert("Delete failed"); }
@@ -65,12 +83,16 @@ export default function Home() {
     if (!message.trim() || !selected) return;
     try {
       setLoading(true);
-      setMessages(p => [...p, { role: "user", text: message }]);
       const q = message; setMessage("");
-      const r = await axios.post("http://localhost:5000/ask-pdf", {
+      setMessages(p => [...p, { role: "user", text: q }]);
+      const r = await apiClient.post("/ask-pdf", {
         question: q, documentId: selected.documentId,
       });
-      setMessages(p => [...p, { role: "ai", text: r.data.answer }]);
+      setMessages(p => {
+        const updated = [...p, { role: "ai", text: r.data.answer }];
+        apiClient.post("/chat", { messages: updated }).catch(console.log);
+        return updated;
+      });
     } catch (e) { console.log(e); }
     finally { setLoading(false); }
   };
@@ -159,10 +181,17 @@ export default function Home() {
         {/* CHAT */}
         <main className="chat">
           <div className="chat-hdr">
-            {selected
-              ? <span className="chat-hdr-pill">📄 {selected.fileName}</span>
-              : <span className="chat-hdr-none">Select a document to start chatting</span>
-            }
+            <div>
+              {selected
+                ? <span className="chat-hdr-pill">📄 {selected.fileName}</span>
+                : <span className="chat-hdr-none">Select a document to start chatting</span>
+              }
+            </div>
+            <div className="chat-actions">
+              <button className="clear-chat" onClick={clearChat} disabled={messages.length === 0}>
+                Clear Chat
+              </button>
+            </div>
           </div>
 
           {messages.length === 0 && !loading ? (
