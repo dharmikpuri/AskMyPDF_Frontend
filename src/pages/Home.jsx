@@ -1,0 +1,216 @@
+import { useState, useEffect, useRef } from "react";
+import axios from "axios";
+import Theme from "./Theme";
+
+const fmtDate = (iso) => new Date(iso).toLocaleDateString("en-IN", {
+  day: "numeric", month: "short", year: "numeric",
+});
+
+export default function Home() {
+  const [message, setMessage]     = useState("");
+  const [messages, setMessages]   = useState([]);
+  const [pdf, setPdf]             = useState(null);
+  const [loading, setLoading]     = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [status, setStatus]       = useState(null);
+  const [documents, setDocuments] = useState([]);
+  const [selected, setSelected]   = useState(null);
+  const [docsLoad, setDocsLoad]   = useState(false);
+  const [deletingId, setDelId]    = useState(null);
+  const endRef = useRef(null);
+
+  useEffect(() => { fetchDocs(); }, []);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
+
+  const fetchDocs = async () => {
+    try {
+      setDocsLoad(true);
+      const r = await axios.get("http://localhost:5000/documents");
+      if (r.data.success) setDocuments(r.data.documents);
+    } catch (e) { console.log(e); }
+    finally { setDocsLoad(false); }
+  };
+
+  const uploadPdf = async () => {
+    if (!pdf) return;
+    try {
+      setUploading(true); setStatus(null);
+      const fd = new FormData(); fd.append("pdf", pdf);
+      const r = await axios.post("http://localhost:5000/upload-pdf", fd);
+      if (r.data.success) {
+        setStatus("ok"); setPdf(null);
+        await fetchDocs();
+        setSelected({ documentId: r.data.documentId, fileName: r.data.fileName });
+        setMessages([]);
+      }
+    } catch (e) { console.log(e); setStatus("fail"); }
+    finally { setUploading(false); }
+  };
+
+  const selectDoc = (doc) => { setSelected(doc); setMessages([]); setStatus(null); };
+
+  const deleteDoc = async (e, doc) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete "${doc.fileName}"? This cannot be undone.`)) return;
+    try {
+      setDelId(doc.documentId);
+      await axios.delete(`http://localhost:5000/documents/${doc.documentId}`);
+      if (selected?.documentId === doc.documentId) { setSelected(null); setMessages([]); }
+      await fetchDocs();
+    } catch (e) { console.log(e); alert("Delete failed"); }
+    finally { setDelId(null); }
+  };
+
+  const send = async () => {
+    if (!message.trim() || !selected) return;
+    try {
+      setLoading(true);
+      setMessages(p => [...p, { role: "user", text: message }]);
+      const q = message; setMessage("");
+      const r = await axios.post("http://localhost:5000/ask-pdf", {
+        question: q, documentId: selected.documentId,
+      });
+      setMessages(p => [...p, { role: "ai", text: r.data.answer }]);
+    } catch (e) { console.log(e); }
+    finally { setLoading(false); }
+  };
+
+  const onKey = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+
+  return (
+    <>
+      <Theme />
+      <div className="shell">
+
+        {/* TOPBAR */}
+        <header className="topbar">
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <span className="logo">✦ AI PDF CHAT APP</span>
+            <span className="logo-sub">RAG · PDF</span>
+          </div>
+          <div className="top-right">
+            <span className="live-dot" /> gemini-embedding-2 · mongodb atlas
+          </div>
+        </header>
+
+        {/* SIDEBAR */}
+        <aside className="sidebar">
+          <div className="up-section">
+            <p className="sec-label">Upload PDF</p>
+            <div className="drop">
+              <input type="file" accept=".pdf"
+                onChange={e => { setPdf(e.target.files[0] || null); setStatus(null); }} />
+              <span className="drop-ico">📄</span>
+              {pdf
+                ? <div className="drop-name">{pdf.name}</div>
+                : <div className="drop-txt">Click to choose a PDF<br />or drop it here</div>
+              }
+            </div>
+
+            {status === "ok"   && <span className="spill ok">  <span className="sd" /> Indexed successfully</span>}
+            {status === "fail" && <span className="spill fail"> <span className="sd" /> Upload failed</span>}
+            {uploading         && <span className="spill busy"> <span className="sd blink" /> Processing chunks…</span>}
+
+            <button className="up-btn" onClick={uploadPdf} disabled={!pdf || uploading}>
+              {uploading ? "Uploading…" : "↑ Upload & Index"}
+            </button>
+          </div>
+
+          <div className="docs-section">
+            <div className="docs-head">
+              <span className="sec-label" style={{ marginBottom: 0 }}>Your PDFs</span>
+              <button className="refresh" onClick={fetchDocs} disabled={docsLoad} title="Refresh">
+                {docsLoad ? "…" : "↻"}
+              </button>
+            </div>
+            <div className="doc-list">
+              {documents.length === 0 && !docsLoad && (
+                <div className="doc-empty">
+                  <span className="doc-empty-icon">🗂</span>
+                  No documents yet.<br />Upload a PDF above.
+                </div>
+              )}
+              {documents.map(doc => (
+                <div
+                  key={doc.documentId}
+                  className={`doc-row ${selected?.documentId === doc.documentId ? "active" : ""}`}
+                  onClick={() => selectDoc(doc)}
+                >
+                  <span className="doc-ico">📄</span>
+                  <div className="doc-info">
+                    <div className="doc-name" title={doc.fileName}>{doc.fileName}</div>
+                    <div className="doc-meta">{doc.totalChunks} chunks · {fmtDate(doc.createdAt)}</div>
+                  </div>
+                  <button className="del"
+                    onClick={e => deleteDoc(e, doc)}
+                    disabled={deletingId === doc.documentId}
+                    title="Delete"
+                  >
+                    {deletingId === doc.documentId ? "…" : "✕"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
+
+        {/* CHAT */}
+        <main className="chat">
+          <div className="chat-hdr">
+            {selected
+              ? <span className="chat-hdr-pill">📄 {selected.fileName}</span>
+              : <span className="chat-hdr-none">Select a document to start chatting</span>
+            }
+          </div>
+
+          {messages.length === 0 && !loading ? (
+            <div className="msgs empty-state">
+              <div className="empty-glow">✦</div>
+              <div className="empty-title">
+                {selected ? `Ask anything about\n"${selected.fileName}"` : "Open a PDF.\nAsk anything."}
+              </div>
+              <div className="empty-sub">
+                {selected
+                  ? "Answers come only from your document · Powered by Gemini"
+                  : "Upload a PDF or select one from the sidebar\nto start your RAG conversation"}
+              </div>
+            </div>
+          ) : (
+            <div className="msgs">
+              {messages.map((msg, i) => (
+                <div key={i} className={`mw ${msg.role}`}>
+                  <div className={`av ${msg.role}`}>{msg.role === "user" ? "You" : "AI"}</div>
+                  <div className={`bbl ${msg.role}`}>{msg.text}</div>
+                </div>
+              ))}
+              {loading && (
+                <div className="mw ai">
+                  <div className="av ai">AI</div>
+                  <div className="bbl ai"><div className="dots"><span /><span /><span /></div></div>
+                </div>
+              )}
+              <div ref={endRef} />
+            </div>
+          )}
+
+          <div className="inp-row">
+            <div className="inp-wrap">
+              <textarea rows={1} value={message}
+                onChange={e => setMessage(e.target.value)}
+                onKeyDown={onKey}
+                placeholder={selected ? `Ask about "${selected.fileName}"… (Enter to send)` : "Select a document first…"}
+                disabled={!selected || loading}
+              />
+            </div>
+            <button className="send" onClick={send}
+              disabled={!message.trim() || !selected || loading} title="Send">
+              ➤
+            </button>
+          </div>
+        </main>
+      </div>
+    </>
+  );
+}
