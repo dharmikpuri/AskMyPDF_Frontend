@@ -390,6 +390,65 @@ const Theme = () => (
     }
     .send:active:not(:disabled) { transform: translateY(0); }
     .send:disabled { opacity: 0.25; cursor: not-allowed; box-shadow: none; }
+
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 50;
+      background: rgba(8, 4, 16, 0.72);
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(6px);
+      animation: fade-in 0.18s ease;
+    }
+    .modal-card {
+      width: min(92vw, 420px);
+      border-radius: 18px;
+      padding: 18px 18px 16px;
+      background: linear-gradient(135deg, rgba(20,12,38,0.95), rgba(12,8,26,0.95));
+      border: 1px solid rgba(192,132,252,0.25);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.6), 0 0 40px rgba(124,58,237,0.25);
+      animation: pop-in 0.18s ease;
+    }
+    .modal-kicker {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.58rem; letter-spacing: 1.4px;
+      color: rgba(192,132,252,0.7);
+      text-transform: uppercase;
+    }
+    .modal-title {
+      margin-top: 6px;
+      font-size: 1.05rem; font-weight: 700; color: rgba(255,255,255,0.92);
+    }
+    .modal-body {
+      margin-top: 8px;
+      font-size: 0.78rem; line-height: 1.6;
+      color: rgba(255,255,255,0.65);
+    }
+    .modal-actions {
+      display: flex; justify-content: flex-end; gap: 10px;
+      margin-top: 16px;
+    }
+    .modal-btn {
+      border-radius: 10px; padding: 8px 12px;
+      font-size: 0.74rem; font-weight: 600; cursor: pointer;
+      border: 1px solid transparent; transition: all 0.15s;
+    }
+    .modal-btn.ghost {
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.12);
+      color: rgba(255,255,255,0.75);
+    }
+    .modal-btn.ghost:hover { background: rgba(255,255,255,0.12); color: #fff; }
+    .modal-btn.danger {
+      background: linear-gradient(135deg, rgba(248,113,113,0.95), rgba(239,68,68,0.95));
+      border-color: rgba(248,113,113,0.7);
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(248,113,113,0.35), inset 0 1px 0 rgba(255,255,255,0.2);
+    }
+    .modal-btn.danger:hover { transform: translateY(-1px); }
+    @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes pop-in {
+      from { opacity: 0; transform: translateY(8px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
   `}</style>
 );
 

@@ -14,19 +14,40 @@ const fmtDate = (iso) =>
 export default function Home() {
   const navigate = useNavigate();
   const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState([]);
+  const [messagesByDocId, setMessagesByDocId] = useState({});
   const [pdf, setPdf] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [pendingByDocId, setPendingByDocId] = useState({});
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState(null);
   const [documents, setDocuments] = useState([]);
   const [selected, setSelected] = useState(null);
+  const [chatSessionId, setChatSessionId] = useState(null);
+  const [sessionByDocId, setSessionByDocId] = useState(() => {
+    try {
+      const raw = localStorage.getItem("chatSessionsByDoc");
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
   const [docsLoad, setDocsLoad] = useState(false);
   const [deletingId, setDelId] = useState(null);
+  const [sessionLoadingByDocId, setSessionLoadingByDocId] = useState({});
   const [userName, setUserName] = useState("User");
+  const [confirmState, setConfirmState] = useState({
+    open: false,
+    title: "",
+    message: "",
+    confirmLabel: "Confirm",
+    onConfirm: null,
+  });
   const endRef = useRef(null);
-  const isSendingRef = useRef(false);
-  const lastSendAtRef = useRef(0);
+  const lastSendAtByDocIdRef = useRef({});
+  const activeMessages = selected ? messagesByDocId[selected.documentId] || [] : [];
+  const isActivePending = selected ? !!pendingByDocId[selected.documentId] : false;
+  const isActiveSessionLoading = selected
+    ? !!sessionLoadingByDocId[selected.documentId]
+    : false;
 
   useEffect(() => {
     const user = localStorage.getItem("user");
@@ -42,7 +63,15 @@ export default function Home() {
   }, []);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [activeMessages, isActivePending]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("chatSessionsByDoc", JSON.stringify(sessionByDocId));
+    } catch {
+      /* ignore storage errors */
+    }
+  }, [sessionByDocId]);
 
   const fetchDocs = async () => {
     try {
@@ -57,18 +86,48 @@ export default function Home() {
     }
   };
 
-  const fetchChats = async (documentId) => {
+  const fetchChats = async (documentId, sessionId) => {
     try {
       if (!documentId) {
-        setMessages([]);
         return;
       }
-      const r = await apiClient.get("/chats", { params: { documentId } });
+      if (!sessionId) {
+        setMessagesByDocId((prev) => ({ ...prev, [documentId]: [] }));
+        return;
+      }
+      const r = await apiClient.get("/chats", {
+        params: { documentId, chatSessionId: sessionId },
+      });
       const history = normalizeChatHistory(r.data);
-      if (Array.isArray(history)) setMessages(history);
+      if (Array.isArray(history)) {
+        setMessagesByDocId((prev) => ({ ...prev, [documentId]: history }));
+      }
     } catch (e) {
       console.log(e);
       toast.error("Failed to load chat history");
+    }
+  };
+
+  const createChatSession = async (documentId) => {
+    try {
+      setSessionLoadingByDocId((prev) => ({ ...prev, [documentId]: true }));
+      if (sessionByDocId[documentId]) {
+        const existing = sessionByDocId[documentId];
+        setChatSessionId(existing);
+        return existing;
+      }
+      const r = await apiClient.post("/chat/session", { documentId });
+      const sessionId = r.data?.chatSessionId || null;
+      if (!sessionId) throw new Error("Missing chatSessionId");
+      setChatSessionId(sessionId);
+      setSessionByDocId((prev) => ({ ...prev, [documentId]: sessionId }));
+      return sessionId;
+    } catch (e) {
+      console.log(e);
+      toast.error("Failed to create chat session");
+      return null;
+    } finally {
+      setSessionLoadingByDocId((prev) => ({ ...prev, [documentId]: false }));
     }
   };
 
@@ -85,22 +144,50 @@ export default function Home() {
       .map((item) => ({ role: item.role, text: item.text }));
   };
 
+  const openConfirm = ({ title, message, confirmLabel, onConfirm }) => {
+    setConfirmState({
+      open: true,
+      title,
+      message,
+      confirmLabel: confirmLabel || "Confirm",
+      onConfirm,
+    });
+  };
+
+  const closeConfirm = () => {
+    setConfirmState((prev) => ({ ...prev, open: false, onConfirm: null }));
+  };
+
   const clearChat = async () => {
     if (!selected?.documentId) {
       toast.info("Select a document first");
       return;
     }
-    if (!window.confirm("Clear chat history?")) return;
-    try {
-      await apiClient.delete("/chats", {
-        params: { documentId: selected.documentId },
-      });
-      setMessages([]);
-      toast.success("Chat cleared");
-    } catch (e) {
-      console.log(e);
-      toast.error("Clear chat failed");
+    if (!chatSessionId) {
+      toast.info("No active chat session");
+      return;
     }
+    openConfirm({
+      title: "Clear chat history",
+      message:
+        "This will remove all messages for the selected document. This cannot be undone.",
+      confirmLabel: "Clear chat",
+      onConfirm: async () => {
+        try {
+          await apiClient.delete("/chats", {
+            params: {
+              documentId: selected.documentId,
+              chatSessionId,
+            },
+          });
+          setMessagesByDocId((prev) => ({ ...prev, [selected.documentId]: [] }));
+          toast.success("Chat cleared");
+        } catch (e) {
+          console.log(e);
+          toast.error("Clear chat failed");
+        }
+      },
+    });
   };
 
   const handleLogout = () => {
@@ -132,7 +219,8 @@ export default function Home() {
           fileName: r.data.fileName,
         };
         setSelected(nextDoc);
-        fetchChats(nextDoc.documentId);
+        const sessionId = await createChatSession(nextDoc.documentId);
+        if (sessionId) fetchChats(nextDoc.documentId, sessionId);
         toast.success("PDF indexed successfully");
       }
     } catch (e) {
@@ -145,34 +233,66 @@ export default function Home() {
   };
 
   const selectDoc = (doc) => {
-    setSelected(doc);
-    setStatus(null);
-    fetchChats(doc.documentId);
+    const run = async () => {
+      setSelected(doc);
+      setStatus(null);
+      const existingSessionId = sessionByDocId[doc.documentId] || null;
+      setChatSessionId(existingSessionId);
+      const sessionId = await createChatSession(doc.documentId);
+      if (sessionId) fetchChats(doc.documentId, sessionId);
+    };
+    run();
   };
 
   const deleteDoc = async (e, doc) => {
     e.stopPropagation();
-    if (!window.confirm(`Delete "${doc.fileName}"? This cannot be undone.`))
-      return;
-    try {
-      setDelId(doc.documentId);
-      await apiClient.delete(`/documents/${doc.documentId}`);
-      if (selected?.documentId === doc.documentId) {
-        setSelected(null);
-        setMessages([]);
-      }
-      await fetchDocs();
-      toast.success("Document deleted");
-    } catch (e) {
-      console.log(e);
-      toast.error("Delete failed");
-    } finally {
-      setDelId(null);
-    }
+    openConfirm({
+      title: "Delete PDF",
+      message: `Delete "${doc.fileName}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      onConfirm: async () => {
+        try {
+          setDelId(doc.documentId);
+          await apiClient.delete(`/documents/${doc.documentId}`);
+          if (selected?.documentId === doc.documentId) {
+            setSelected(null);
+            setChatSessionId(null);
+          }
+          setSessionByDocId((prev) => {
+            const next = { ...prev };
+            delete next[doc.documentId];
+            return next;
+          });
+          setMessagesByDocId((prev) => {
+            const next = { ...prev };
+            delete next[doc.documentId];
+            return next;
+          });
+          setPendingByDocId((prev) => {
+            const next = { ...prev };
+            delete next[doc.documentId];
+            return next;
+          });
+          setSessionLoadingByDocId((prev) => {
+            const next = { ...prev };
+            delete next[doc.documentId];
+            return next;
+          });
+          await fetchDocs();
+          toast.success("Document deleted");
+        } catch (e) {
+          console.log(e);
+          toast.error("Delete failed");
+        } finally {
+          setDelId(null);
+        }
+      },
+    });
   };
 
   const send = async () => {
     const now = Date.now();
+    let activeDocumentId;
     if (!message.trim()) {
       toast.info("Type a question first");
       return;
@@ -181,28 +301,49 @@ export default function Home() {
       toast.info("Select a document first");
       return;
     }
-    if (loading || isSendingRef.current) return;
-    if (now - lastSendAtRef.current < 400) return;
+    if (!chatSessionId) {
+      toast.info("No active chat session");
+      return;
+    }
+    if (isActivePending) return;
+    activeDocumentId = selected.documentId;
+    const lastSendAt = lastSendAtByDocIdRef.current[activeDocumentId] || 0;
+    if (now - lastSendAt < 400) return;
     try {
-      isSendingRef.current = true;
-      lastSendAtRef.current = now;
-      setLoading(true);
+      lastSendAtByDocIdRef.current[activeDocumentId] = now;
       const q = message;
+      const activeSessionId = chatSessionId;
       setMessage("");
-      setMessages((p) => [...p, { role: "user", text: q }]);
+      setMessagesByDocId((prev) => {
+        const next = { ...prev };
+        const current = next[activeDocumentId] || [];
+        next[activeDocumentId] = [...current, { role: "user", text: q }];
+        return next;
+      });
+      setPendingByDocId((prev) => ({ ...prev, [activeDocumentId]: true }));
       const r = await apiClient.post("/ask-pdf", {
         question: q,
-        documentId: selected.documentId,
+        documentId: activeDocumentId,
       });
       const aiText = r.data?.answer || r.data?.reply || "";
       if (!aiText) {
         toast.error("No response from AI");
+        setPendingByDocId((prev) => ({ ...prev, [activeDocumentId]: false }));
+        return;
       }
-      setMessages((p) => [...p, { role: "ai", text: aiText }]);
-      setLoading(false);
+      setMessagesByDocId((prev) => {
+        const next = { ...prev };
+        const current = next[activeDocumentId] || [];
+        next[activeDocumentId] = [...current, { role: "ai", text: aiText }];
+        return next;
+      });
+      setPendingByDocId((prev) => ({ ...prev, [activeDocumentId]: false }));
 
       apiClient.post("/chat", {
-        documentId: selected.documentId,
+        documentId: activeDocumentId,
+        chatSessionId: activeSessionId,
+        saveOnly: true,
+        reply: aiText,
         messages: [
           { role: "user", text: q },
           { role: "ai", text: aiText },
@@ -215,8 +356,9 @@ export default function Home() {
       console.log(e);
       toast.error("Failed to get response");
     } finally {
-      setLoading(false);
-      isSendingRef.current = false;
+      if (activeDocumentId) {
+        setPendingByDocId((prev) => ({ ...prev, [activeDocumentId]: false }));
+      }
     }
   };
 
@@ -369,17 +511,20 @@ export default function Home() {
               )}
             </div>
             <div className="chat-actions">
+              {isActiveSessionLoading && (
+                <span className="chat-hdr-none">Loading session…</span>
+              )}
               <button
                 className="clear-chat"
                 onClick={clearChat}
-                disabled={messages.length === 0}
+                disabled={activeMessages.length === 0 || isActiveSessionLoading}
               >
                 Clear Chat
               </button>
             </div>
           </div>
 
-          {messages.length === 0 && !loading ? (
+          {activeMessages.length === 0 && !isActivePending ? (
             <div className="msgs empty-state">
               <div className="empty-glow">✦</div>
               <div className="empty-title">
@@ -395,7 +540,7 @@ export default function Home() {
             </div>
           ) : (
             <div className="msgs">
-              {messages.map((msg, i) => (
+              {activeMessages.map((msg, i) => (
                 <div key={i} className={`mw ${msg.role}`}>
                   <div className={`av ${msg.role}`}>
                     {msg.role === "user" ? "You" : "AI"}
@@ -403,7 +548,7 @@ export default function Home() {
                   <div className={`bbl ${msg.role}`}>{msg.text}</div>
                 </div>
               ))}
-              {loading && (
+              {isActivePending && (
                 <div className="mw ai">
                   <div className="av ai">AI</div>
                   <div className="bbl ai">
@@ -431,13 +576,13 @@ export default function Home() {
                     ? `Ask about "${selected.fileName}"… (Enter to send)`
                     : "Select a document first…"
                 }
-                disabled={!selected || loading}
+                disabled={!selected || isActivePending || isActiveSessionLoading}
               />
             </div>
             <button
               className="send"
               onClick={send}
-              disabled={!message.trim() || !selected || loading}
+              disabled={!message.trim() || !selected || isActivePending || isActiveSessionLoading}
               title="Send"
             >
               ➤
@@ -445,6 +590,37 @@ export default function Home() {
           </div>
         </main>
       </div>
+
+      {confirmState.open && (
+        <div className="modal-backdrop" onClick={closeConfirm}>
+          <div
+            className="modal-card"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={confirmState.title}
+          >
+            <div className="modal-kicker">Confirmation</div>
+            <div className="modal-title">{confirmState.title}</div>
+            <div className="modal-body">{confirmState.message}</div>
+            <div className="modal-actions">
+              <button className="modal-btn ghost" onClick={closeConfirm}>
+                Cancel
+              </button>
+              <button
+                className="modal-btn danger"
+                onClick={async () => {
+                  const handler = confirmState.onConfirm;
+                  closeConfirm();
+                  if (handler) await handler();
+                }}
+              >
+                {confirmState.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
