@@ -34,6 +34,7 @@ export default function Home() {
   const [deletingId, setDelId] = useState(null);
   const [sessionLoadingByDocId, setSessionLoadingByDocId] = useState({});
   const [userName, setUserName] = useState("User");
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [confirmState, setConfirmState] = useState({
     open: false,
     title: "",
@@ -234,6 +235,7 @@ export default function Home() {
 
   const selectDoc = (doc) => {
     const run = async () => {
+      setDrawerOpen(false);
       setSelected(doc);
       setStatus(null);
       const existingSessionId = sessionByDocId[doc.documentId] || null;
@@ -258,6 +260,7 @@ export default function Home() {
             setSelected(null);
             setChatSessionId(null);
           }
+          if (drawerOpen) setDrawerOpen(false);
           setSessionByDocId((prev) => {
             const next = { ...prev };
             delete next[doc.documentId];
@@ -372,17 +375,33 @@ export default function Home() {
   return (
     <>
       <Theme />
-      <div className="shell">
+      <div className={`shell ${drawerOpen ? "drawer-open" : ""}`}>
         {/* TOPBAR */}
         <header className="topbar">
           <div style={{ display: "flex", alignItems: "center" }}>
             <span className="logo">✦ AskMyPDF</span>
             {/* <span className="logo-sub">RAG · PDF</span> */}
           </div>
+          <button
+            className="drawer-toggle"
+            onClick={() => setDrawerOpen((prev) => !prev)}
+            type="button"
+          >
+            PDFs
+          </button>
           <div className="top-right">
             <span className="live-dot" /> gemini-embedding-2 · mongodb atlas
           </div>
         </header>
+
+        {drawerOpen && (
+          <button
+            className="drawer-overlay"
+            onClick={() => setDrawerOpen(false)}
+            type="button"
+            aria-label="Close sidebar"
+          />
+        )}
 
         {/* SIDEBAR */}
         <aside className="sidebar">
@@ -475,6 +494,9 @@ export default function Home() {
                       {doc.totalChunks} chunks · {fmtDate(doc.createdAt)}
                     </div>
                   </div>
+                  {pendingByDocId[doc.documentId] && (
+                    <span className="pending-badge">Answering</span>
+                  )}
                   <button
                     className="del"
                     onClick={(e) => deleteDoc(e, doc)}
@@ -524,7 +546,25 @@ export default function Home() {
             </div>
           </div>
 
-          {activeMessages.length === 0 && !isActivePending ? (
+          {activeMessages.length === 0 && isActivePending ? (
+            <div className="msgs skeleton-state">
+              <div className="sk-row">
+                <div className="sk-pill" />
+                <div className="sk-line w-60" />
+                <div className="sk-line w-80" />
+              </div>
+              <div className="sk-row align-right">
+                <div className="sk-pill" />
+                <div className="sk-line w-70" />
+                <div className="sk-line w-50" />
+              </div>
+              <div className="sk-row">
+                <div className="sk-pill" />
+                <div className="sk-line w-40" />
+                <div className="sk-line w-75" />
+              </div>
+            </div>
+          ) : activeMessages.length === 0 ? (
             <div className="msgs empty-state">
               <div className="empty-glow">✦</div>
               <div className="empty-title">
