@@ -1,10 +1,10 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
+import { getToken } from "../lib/session";
 
 export default function PrivateRoute() {
   const location = useLocation();
-  const token = localStorage.getItem("token");
 
-  if (!token) {
+  if (!getToken()) {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
 

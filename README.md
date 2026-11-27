@@ -1,50 +1,73 @@
-# AskMyPDF
+# AskMyPDF — Frontend
 
-AskMyPDF is a full-stack PDF conversational Q&A web application. Users can upload PDF documents and ask natural-language questions; the app uses retrieval-augmented generation (RAG) with LangChain on the backend to return context-aware answers.
+Chat with your PDFs: ask questions in plain language and get answers that come only from your document, with the source passages to prove it.
 
-## Demo
-- Local: `npm install` → `npm run dev` → open `http://localhost:5173`
-- Build: `npm run build` → deploy artifacts in `dist` (Vercel recommended)
+**Live demo:** https://ask-my-pdf-dharmik.vercel.app
+
+## Watch the walkthrough (84 s)
+
+[![AskMyPDF walkthrough video: the landing page, demo, citations, follow-up questions, upload, how RAG works and mobile](docs/video/askmypdf-poster.png)](docs/video/askmypdf-walkthrough.mp4)
+
+## Try the demo
+
+Click **Try the demo — no sign-up** on the landing page. You get a guest session with:
+
+- **4 sample documents** to explore: the NIST AI Risk Management Framework, the U.S. Constitution, a Sherlock Holmes story and a fictional employee handbook.
+- **3 free questions** across the samples.
+- **1 upload of your own PDF** (up to 2 MB, about 15 pages), deleted automatically after 1 hour.
+
+Sign up for a free account to remove these limits (uploads up to 10 MB, saved chat history).
 
 ## Features
-- Upload and manage PDF documents
-- Chat-style Q&A interface powered by RAG (LangChain)
-- Authentication: signup / login flows
-- Protected routes for authenticated users
-- Global notifications via `react-toastify`
-- SPA-friendly routing (Vercel rewrites configured in `vercel.json`)
+
+- Grounded answers with expandable, numbered **citations** and match scores
+- **Follow-up questions** that remember context, per document
+- **Drag-and-drop upload** with live progress and clear error messages
+- Markdown answers (lists, tables, code), one-click copy
+- Animated landing page explaining the RAG pipeline
+- Cold-start banner for the free-tier backend
+- Responsive and keyboard-accessible, with an off-canvas document drawer on mobile
+
+## How it works
+
+1. **Upload** — text is extracted from the PDF and split into overlapping passages.
+2. **Index** — each passage becomes a Gemini embedding stored in MongoDB Atlas Vector Search.
+3. **Ask** — your question finds the closest passages and Gemini answers only from them, with citations.
+
+The server side, including its architecture diagram, lives in the backend repo: https://github.com/dharmikpuri/AskMyPDF_Backend
 
 ## Tech stack
-- Frontend: React, Vite, React Router, react-toastify
-- HTTP: axios
-- Backend: Custom API (RAG + LangChain) — separate repository
-- Deployment: Vercel (static site serving `dist`)
 
-## Key files
-- `src/` — React source
-- `src/api/config.js` — API base URL via `VITE_API_URL`
-- `src/api/auth.js` — authentication handlers
-- `routes/route.jsx`, `routes/PrivateRoute.jsx` — app routing and protection
-- `public/favicon.svg` — project favicon (custom)
-- `vercel.json` — SPA rewrites for Vercel
+React 19 · Vite 8 (React Compiler) · React Router 7 · Axios · react-markdown + remark-gfm · lucide-react · react-toastify. Plain JSX and hand-written CSS with "Paper & Jade" design tokens (`src/index.css`).
 
-## Deployment steps
-1. Ensure `VITE_API_URL` in `.env` points to your backend API.
-2. Build:
+## Local setup
+
 ```bash
 npm install
-npm run build
+# create a .env file containing: VITE_API_URL=<backend url, e.g. http://localhost:5000>
+npm run dev
 ```
-3. Deploy to Vercel (or any static host) and set Build Command to `vite build` and Output Directory to `dist`.
+
+| Script | What it does |
+| --- | --- |
+| `npm run dev` | Start the Vite dev server |
+| `npm run build` | Production build to `dist/` |
+| `npm run preview` | Preview the production build |
+| `npm run lint` | Run ESLint |
+
+## Deployment
+
+Deployed on Vercel as a static site; `vercel.json` rewrites every route to `index.html` so client-side routing works on refresh.
+
+1. Set `VITE_API_URL` to the backend URL in the Vercel project settings.
+2. Build command: `npm run build` (`vite build`), output directory: `dist`.
 
 ## Screenshots
-Add screenshots below (update path or paste images):
 
-- Screenshot 1: /public/screenshots/home.png
-- <img width="956" height="476" alt="image" src="https://github.com/user-attachments/assets/39aadc47-b6cc-48e7-945b-e72cc4898aa4" />
-
-- Screenshot 2: /public/screenshots/chat.png
-- <img width="956" height="476" alt="image" src="https://github.com/user-attachments/assets/d06cdfb2-8882-4e67-a808-8e02ed06f01c" />
-
-- Screenshot 3: /public/screenshots/login.png
-- <img width="955" height="473" alt="image" src="https://github.com/user-attachments/assets/75adb9ed-5620-4e29-ac5c-203553ac9c12" />
+![Landing page](docs/screenshots/landing.png)
+![Landing page on mobile](docs/screenshots/landing-mobile.png)
+![Chatting with a sample document](docs/screenshots/demo-chat.png)
+![Expandable sources](docs/screenshots/sources.png)
+![Demo limit modal](docs/screenshots/limit-modal.png)
+![Uploading a PDF](docs/screenshots/upload.png)
+![Mobile chat](docs/screenshots/mobile-chat.png)
