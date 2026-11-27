@@ -1,33 +1,34 @@
-import axios from "axios";
 import apiClient from "./config";
+import { parseApiError } from "./errors";
 
-const handleAuthError = (error, fallback) => {
-  if (axios.isAxiosError(error)) {
-    return {
-      success: false,
-      message: error.response?.data?.message || fallback,
-    };
-  }
-  return {
-    success: false,
-    message: fallback,
-  };
+const fail = (error, fallback) => {
+  const { message, code } = parseApiError(error, fallback);
+  return { success: false, message, code };
 };
 
 export const loginUser = async ({ email, password }) => {
   try {
-    const response = await apiClient.post("/auth/login", { email, password });
-    return response.data;
+    const { data } = await apiClient.post("/auth/login", { email, password });
+    return data;
   } catch (error) {
-    return handleAuthError(error, "Login failed");
+    return fail(error, "Login failed. Please try again.");
   }
 };
 
 export const signupUser = async ({ name, email, password }) => {
   try {
-    const response = await apiClient.post("/auth/signup", { name, email, password });
-    return response.data;
+    const { data } = await apiClient.post("/auth/signup", { name, email, password });
+    return data;
   } catch (error) {
-    return handleAuthError(error, "Signup failed");
+    return fail(error, "Signup failed. Please try again.");
+  }
+};
+
+export const startDemo = async () => {
+  try {
+    const { data } = await apiClient.post("/auth/demo");
+    return data;
+  } catch (error) {
+    return fail(error, "The demo is unavailable right now. Please try again shortly.");
   }
 };

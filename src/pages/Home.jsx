@@ -1,666 +1,493 @@
-import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
-import apiClient from "../api/config";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "react-toastify";
-import Theme from "./Theme";
+import apiClient from "../api/config";
+import { parseApiError } from "../api/errors";
+import { clearSession, getSessions, getToken, getUser, setSessions, updateUser } from "../lib/session";
+import { uid } from "../lib/format";
+import Topbar from "../components/home/Topbar";
+import Sidebar from "../components/home/Sidebar";
+import ChatPane from "../components/home/ChatPane";
+import DemoLimitModal from "../components/home/DemoLimitModal";
+import ConfirmModal from "../components/ConfirmModal";
 
-const fmtDate = (iso) =>
-  new Date(iso).toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+const SEND_GUARD_MS = 400;
+
+const normalizeHistory = (data) => {
+  const list = Array.isArray(data?.messages) ? data.messages : [];
+  return list
+    .filter((m) => m && m.role && typeof m.text === "string")
+    .map((m) => ({
+      id: uid(),
+      role: m.role === "user" ? "user" : "ai",
+      text: m.text,
+      sources: Array.isArray(m.sources) ? m.sources : undefined,
+    }));
+};
 
 export default function Home() {
   const navigate = useNavigate();
-  const [message, setMessage] = useState("");
-  const [messagesByDocId, setMessagesByDocId] = useState({});
-  const [pdf, setPdf] = useState(null);
-  const [pendingByDocId, setPendingByDocId] = useState({});
-  const [uploading, setUploading] = useState(false);
-  const [status, setStatus] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [user] = useState(() => getUser());
+  const isGuest = !!user?.isGuest;
+
+  const [demo, setDemo] = useState(() => user?.demo || null);
+  const [limitModalOpen, setLimitModalOpen] = useState(false);
+
   const [documents, setDocuments] = useState([]);
+  const [docsLoading, setDocsLoading] = useState(true);
   const [selected, setSelected] = useState(null);
-  const [chatSessionId, setChatSessionId] = useState(null);
-  const [sessionByDocId, setSessionByDocId] = useState(() => {
-    try {
-      const raw = localStorage.getItem("chatSessionsByDoc");
-      return raw ? JSON.parse(raw) : {};
-    } catch {
-      return {};
-    }
-  });
-  const [docsLoad, setDocsLoad] = useState(false);
-  const [deletingId, setDelId] = useState(null);
+  const [message, setMessage] = useState("");
+  // Per-document state so switching documents mid-answer keeps working.
+  const [messagesByDocId, setMessagesByDocId] = useState({});
+  const [pendingByDocId, setPendingByDocId] = useState({});
+  const [sessionByDocId, setSessionByDocId] = useState(() => getSessions());
   const [sessionLoadingByDocId, setSessionLoadingByDocId] = useState({});
-  const [userName, setUserName] = useState("User");
+  const [deletingId, setDeletingId] = useState(null);
+
+  const [confirm, setConfirm] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [confirmState, setConfirmState] = useState({
-    open: false,
-    title: "",
-    message: "",
-    confirmLabel: "Confirm",
-    onConfirm: null,
-  });
-  const endRef = useRef(null);
-  const lastSendAtByDocIdRef = useRef({});
-  const activeMessages = selected ? messagesByDocId[selected.documentId] || [] : [];
-  const isActivePending = selected ? !!pendingByDocId[selected.documentId] : false;
-  const isActiveSessionLoading = selected
-    ? !!sessionLoadingByDocId[selected.documentId]
-    : false;
+
+  // Synchronous mirror of sessionByDocId: state reads inside async handlers can be stale.
+  const sessionsRef = useRef(sessionByDocId);
+  const docsRef = useRef([]);
+  // Question handed over from the landing page (?q=): asked once, then stripped from the URL.
+  const autoAskRef = useRef(searchParams.get("q"));
+  const lastSendAtRef = useRef({});
+  const sessionInflightRef = useRef({});
+  const historyRequestedRef = useRef(new Set());
+  const drawerToggleRef = useRef(null);
+  const sidebarRef = useRef(null);
+
+  const selectedId = selected?.documentId;
+  const activeMessages = selectedId ? messagesByDocId[selectedId] : undefined;
+  const activePending = selectedId ? !!pendingByDocId[selectedId] : false;
+  const activeSessionLoading = selectedId ? !!sessionLoadingByDocId[selectedId] : false;
+  const limitReached = isGuest && !!demo && demo.remaining <= 0;
 
   useEffect(() => {
-    const user = localStorage.getItem("user");
-    if (user) {
-      try {
-        const parsed = JSON.parse(user);
-        if (parsed?.name) setUserName(parsed.name);
-      } catch {
-        /* ignore parse errors */
-      }
-    }
-    fetchDocs();
-  }, []);
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activeMessages, isActivePending]);
+    docsRef.current = documents;
+  }, [documents]);
 
+  // Persist doc -> chat-session map (only while a session exists, so logout isn't undone).
   useEffect(() => {
-    try {
-      localStorage.setItem("chatSessionsByDoc", JSON.stringify(sessionByDocId));
-    } catch {
-      /* ignore storage errors */
-    }
+    if (getToken()) setSessions(sessionByDocId);
   }, [sessionByDocId]);
 
-  const fetchDocs = async () => {
-    try {
-      setDocsLoad(true);
-      const r = await apiClient.get("/documents");
-      if (r.data.success) setDocuments(r.data.documents);
-    } catch (e) {
-      console.log(e);
-      toast.error("Failed to load documents");
-    } finally {
-      setDocsLoad(false);
-    }
+  // ---- Drawer (<960px): focus in on open, Escape closes, focus back on close ----
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    const toggle = drawerToggleRef.current;
+    sidebarRef.current?.focus();
+    const onKey = (e) => {
+      if (e.key === "Escape") setDrawerOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      toggle?.focus();
+    };
+  }, [drawerOpen]);
+
+  // ---- Sessions & history ----
+  const storeSession = (documentId, sessionId) => {
+    const next = { ...sessionsRef.current };
+    if (sessionId) next[documentId] = sessionId;
+    else delete next[documentId];
+    sessionsRef.current = next;
+    setSessionByDocId(next);
   };
 
-  const fetchChats = async (documentId, sessionId) => {
-    try {
-      if (!documentId) {
-        return;
-      }
-      if (!sessionId) {
-        setMessagesByDocId((prev) => ({ ...prev, [documentId]: [] }));
-        return;
-      }
-      const r = await apiClient.get("/chats", {
-        params: { documentId, chatSessionId: sessionId },
-      });
-      const history = normalizeChatHistory(r.data);
-      if (Array.isArray(history)) {
-        setMessagesByDocId((prev) => ({ ...prev, [documentId]: history }));
-      }
-    } catch (e) {
-      console.log(e);
-      toast.error("Failed to load chat history");
-    }
-  };
+  /** `fresh` bypasses the cached id. With `fresh`, a NOT_FOUND from the server is re-thrown (document is gone). */
+  const ensureSession = async (documentId, { fresh = false } = {}) => {
+    const existing = sessionsRef.current[documentId];
+    if (existing && !fresh) return existing;
+    if (sessionInflightRef.current[documentId]) return sessionInflightRef.current[documentId];
 
-  const createChatSession = async (documentId) => {
-    try {
+    const run = (async () => {
       setSessionLoadingByDocId((prev) => ({ ...prev, [documentId]: true }));
-      if (sessionByDocId[documentId]) {
-        const existing = sessionByDocId[documentId];
-        setChatSessionId(existing);
-        return existing;
+      try {
+        const { data } = await apiClient.post("/chat/session", { documentId });
+        const sessionId = data?.chatSessionId;
+        if (!sessionId) throw new Error("Missing chatSessionId");
+        storeSession(documentId, sessionId);
+        return sessionId;
+      } catch (e) {
+        const err = parseApiError(e, "Couldn't start a chat session.");
+        if (fresh && err.code === "NOT_FOUND") throw e;
+        if (err.code === "NOT_FOUND") {
+          reportMissingDoc(documentId, err.message);
+        } else {
+          toast.error(err.message);
+        }
+        return null;
+      } finally {
+        delete sessionInflightRef.current[documentId];
+        setSessionLoadingByDocId((prev) => ({ ...prev, [documentId]: false }));
       }
-      const r = await apiClient.post("/chat/session", { documentId });
-      const sessionId = r.data?.chatSessionId || null;
-      if (!sessionId) throw new Error("Missing chatSessionId");
-      setChatSessionId(sessionId);
-      setSessionByDocId((prev) => ({ ...prev, [documentId]: sessionId }));
-      return sessionId;
+    })();
+    sessionInflightRef.current[documentId] = run;
+    return run;
+  };
+
+  /** The document no longer exists server-side (deleted, or a guest upload that expired). */
+  const reportMissingDoc = (documentId, serverMessage) => {
+    const doc = docsRef.current.find((d) => d.documentId === documentId);
+    toast.error(doc?.isGuestUpload ? "Your uploaded PDF has expired." : serverMessage);
+    forgetDoc(documentId);
+  };
+
+  const loadHistory = async (documentId, sessionId) => {
+    historyRequestedRef.current.add(documentId);
+    try {
+      const { data } = await apiClient.get("/chats", { params: { documentId, chatSessionId: sessionId } });
+      setMessagesByDocId((prev) => ({ ...prev, [documentId]: normalizeHistory(data) }));
     } catch (e) {
-      console.log(e);
-      toast.error("Failed to create chat session");
-      return null;
-    } finally {
-      setSessionLoadingByDocId((prev) => ({ ...prev, [documentId]: false }));
+      const { code, message: msg } = parseApiError(e, "Couldn't load chat history.");
+      if (code === "NOT_FOUND") {
+        // Stored session no longer exists server-side: forget it, start clean.
+        storeSession(documentId, null);
+      } else {
+        toast.error(msg);
+      }
+      historyRequestedRef.current.delete(documentId);
+      setMessagesByDocId((prev) => ({ ...prev, [documentId]: [] }));
     }
   };
 
-  const normalizeChatHistory = (data) => {
-    const list = data?.messages || data?.chats || data || [];
-    if (!Array.isArray(list)) return [];
-    if (list.length === 0) return [];
-    if (list[0]?.role && list[0]?.text) return list;
-    if (list[0]?.message?.role && list[0]?.message?.text) {
-      return list.map((item) => item.message).filter(Boolean);
+  const selectDoc = async (doc) => {
+    setSelected(doc);
+    setDrawerOpen(false);
+    const sessionId = await ensureSession(doc.documentId);
+    if (sessionId && !historyRequestedRef.current.has(doc.documentId)) {
+      await loadHistory(doc.documentId, sessionId);
+    } else if (!sessionId) {
+      setMessagesByDocId((prev) => (prev[doc.documentId] ? prev : { ...prev, [doc.documentId]: [] }));
     }
-    return list
-      .filter((item) => item?.role && item?.text)
-      .map((item) => ({ role: item.role, text: item.text }));
   };
 
-  const openConfirm = ({ title, message, confirmLabel, onConfirm }) => {
-    setConfirmState({
-      open: true,
-      title,
-      message,
-      confirmLabel: confirmLabel || "Confirm",
-      onConfirm,
-    });
+  // ---- Documents ----
+  const fetchDocs = async () => {
+    const { data } = await apiClient.get("/documents");
+    const list = Array.isArray(data?.documents) ? data.documents : [];
+    setDocuments(list);
+    return list;
   };
 
-  const closeConfirm = () => {
-    setConfirmState((prev) => ({ ...prev, open: false, onConfirm: null }));
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await fetchDocs();
+        if (cancelled) return;
+        const wanted = searchParams.get("doc");
+        const target = (wanted && list.find((d) => d.documentId === wanted)) ||
+          (isGuest ? list.find((d) => d.isDemo) || list[0] : null);
+        if (target) selectDoc(target);
+      } catch (e) {
+        if (!cancelled) toast.error(parseApiError(e, "Failed to load documents.").message);
+      } finally {
+        if (!cancelled) setDocsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Mount-only: initial document load (and demo auto-select).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleUploaded = async (uploaded) => {
+    toast.success(`PDF indexed — ${uploaded.totalChunks} ${uploaded.totalChunks === 1 ? "chunk" : "chunks"}`);
+    if (uploaded.demo) {
+      applyDemo({ uploadLimit: uploaded.demo.uploadLimit, uploadsUsed: uploaded.demo.uploadsUsed });
+    }
+    if (uploaded.searchReady === false) {
+      toast.info("Indexed — search may take a few more seconds to warm up.");
+    }
+    let doc = {
+      documentId: uploaded.documentId,
+      fileName: uploaded.fileName,
+      totalChunks: uploaded.totalChunks,
+      createdAt: new Date().toISOString(),
+      ...(isGuest ? { isGuestUpload: true, isDemo: false, expiresAt: uploaded.expiresAt } : {}),
+    };
+    try {
+      const list = await fetchDocs();
+      doc = list.find((d) => d.documentId === uploaded.documentId) || doc;
+    } catch {
+      setDocuments((prev) => [doc, ...prev]);
+    }
+    // Brand-new document: no history to fetch.
+    historyRequestedRef.current.add(doc.documentId);
+    setMessagesByDocId((prev) => ({ ...prev, [doc.documentId]: [] }));
+    setSelected(doc);
+    setDrawerOpen(false);
+    await ensureSession(doc.documentId);
   };
 
-  const clearChat = async () => {
-    if (!selected?.documentId) {
-      toast.info("Select a document first");
-      return;
-    }
-    if (!chatSessionId) {
-      toast.info("No active chat session");
-      return;
-    }
-    openConfirm({
-      title: "Clear chat history",
-      message:
-        "This will remove all messages for the selected document. This cannot be undone.",
-      confirmLabel: "Clear chat",
+  /** Drop every trace of a document from local state. */
+  const forgetDoc = (documentId) => {
+    setSelected((cur) => (cur?.documentId === documentId ? null : cur));
+    const drop = (prev) => {
+      const next = { ...prev };
+      delete next[documentId];
+      return next;
+    };
+    storeSession(documentId, null);
+    setMessagesByDocId(drop);
+    setPendingByDocId(drop);
+    setSessionLoadingByDocId(drop);
+    historyRequestedRef.current.delete(documentId);
+    setDocuments((prev) => prev.filter((d) => d.documentId !== documentId));
+  };
+
+  const requestDelete = (doc) => {
+    setConfirm({
+      title: "Delete document",
+      message: `Delete "${doc.fileName}" and its chats? This cannot be undone.`,
+      confirmLabel: "Delete",
+      busyLabel: "Deleting\u2026",
       onConfirm: async () => {
+        setDeletingId(doc.documentId);
         try {
-          await apiClient.delete("/chats", {
-            params: {
-              documentId: selected.documentId,
-              chatSessionId,
-            },
-          });
-          setMessagesByDocId((prev) => ({ ...prev, [selected.documentId]: [] }));
-          toast.success("Chat cleared");
+          await apiClient.delete(`/documents/${doc.documentId}`);
+          forgetDoc(doc.documentId);
+          toast.success("Document deleted");
         } catch (e) {
-          console.log(e);
-          toast.error("Clear chat failed");
+          toast.error(parseApiError(e, "Delete failed.").message);
+        } finally {
+          setDeletingId(null);
         }
       },
     });
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    navigate("/login");
+  const requestClear = () => {
+    if (!selected) return;
+    const documentId = selected.documentId;
+    const chatSessionId = sessionsRef.current[documentId];
+    if (!chatSessionId) {
+      toast.info("No active chat session");
+      return;
+    }
+    setConfirm({
+      title: "Clear chat",
+      message: "This removes all messages for this document. This cannot be undone.",
+      confirmLabel: "Clear chat",
+      busyLabel: "Clearing\u2026",
+      onConfirm: async () => {
+        try {
+          await apiClient.delete("/chats", { params: { documentId, chatSessionId } });
+          setMessagesByDocId((prev) => ({ ...prev, [documentId]: [] }));
+          toast.success("Chat cleared");
+        } catch (e) {
+          toast.error(parseApiError(e, "Couldn't clear the chat.").message);
+        }
+      },
+    });
+  };
+
+  // ---- Asking ----
+  const applyDemo = (info) => {
+    const merged = { ...(demo || {}), ...info };
+    setDemo(merged);
+    updateUser({ demo: merged });
+    return merged;
+  };
+
+  const patchMessage = (documentId, id, patch) =>
+    setMessagesByDocId((prev) => ({
+      ...prev,
+      [documentId]: (prev[documentId] || []).map((m) => (m.id === id ? { ...m, ...patch } : m)),
+    }));
+
+  /** Returns true if the question was actually sent. `retryId` re-sends an existing failed message. */
+  const ask = async (rawQuestion, retryId) => {
+    const question = rawQuestion.trim();
+    if (!question || !selected || activePending || limitReached) return false;
+
+    const documentId = selected.documentId;
+    const now = Date.now();
+    // The guard stops accidental double-sends of NEW questions. A Retry is a deliberate action
+    // and can legitimately follow a failure within milliseconds (e.g. offline), so it skips it.
+    if (!retryId && now - (lastSendAtRef.current[documentId] || 0) < SEND_GUARD_MS) return false;
+    lastSendAtRef.current[documentId] = now;
+
+    setPendingByDocId((prev) => ({ ...prev, [documentId]: true }));
+
+    const userId = retryId || uid();
+    if (retryId) {
+      patchMessage(documentId, retryId, { error: false });
+    } else {
+      setMessagesByDocId((prev) => ({
+        ...prev,
+        [documentId]: [...(prev[documentId] || []), { id: userId, role: "user", text: question }],
+      }));
+    }
+
+    try {
+      let chatSessionId = await ensureSession(documentId);
+      if (!chatSessionId) throw new Error("no-session");
+
+      let data;
+      try {
+        ({ data } = await apiClient.post("/ask-pdf", { question, documentId, chatSessionId }));
+      } catch (e) {
+        if (parseApiError(e).code !== "NOT_FOUND") throw e;
+        // Stored chat session is gone server-side: drop it, make a new one, retry once silently.
+        storeSession(documentId, null);
+        chatSessionId = await ensureSession(documentId, { fresh: true }); // throws NOT_FOUND if the document is gone
+        if (!chatSessionId) throw new Error("no-session", { cause: e });
+        ({ data } = await apiClient.post("/ask-pdf", { question, documentId, chatSessionId }));
+      }
+      setMessagesByDocId((prev) => ({
+        ...prev,
+        [documentId]: [
+          ...(prev[documentId] || []),
+          { id: uid(), role: "ai", text: data?.answer || "", sources: data?.sources || [] },
+        ],
+      }));
+      if (data?.demo) {
+        const merged = applyDemo(data.demo);
+        if (merged.remaining <= 0) setLimitModalOpen(true);
+      }
+    } catch (e) {
+      const { code, message: msg } = parseApiError(e, "Couldn't get an answer.");
+      if (e?.message === "no-session") {
+        patchMessage(documentId, userId, { error: true }); // ensureSession already toasted
+      } else if (code === "NOT_FOUND") {
+        // Document itself no longer exists.
+        reportMissingDoc(documentId, msg);
+      } else if (code === "DEMO_LIMIT") {
+        // Out of free questions: drop the unanswered message and show the upsell.
+        setMessagesByDocId((prev) => ({
+          ...prev,
+          [documentId]: (prev[documentId] || []).filter((m) => m.id !== userId),
+        }));
+        applyDemo({ remaining: 0 });
+        setLimitModalOpen(true);
+      } else {
+        const showInline = code === "AI_UNAVAILABLE" || code === "RATE_LIMITED";
+        patchMessage(documentId, userId, { error: true, errorText: showInline ? msg : undefined });
+        if (!showInline) toast.error(msg);
+      }
+    } finally {
+      setPendingByDocId((prev) => ({ ...prev, [documentId]: false }));
+    }
+    return true;
+  };
+
+  // Auto-ask the ?q= question once the target document and its history are ready.
+  useEffect(() => {
+    const q = autoAskRef.current;
+    if (!q || docsLoading || !selected || activeMessages === undefined || activePending) return;
+    autoAskRef.current = null;
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("q");
+        return next;
+      },
+      { replace: true }
+    );
+    if (isGuest && !limitReached) ask(q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docsLoading, selected, activeMessages, activePending]);
+
+  const send = async () => {
+    const text = message;
+    if (await ask(text)) setMessage((cur) => (cur === text ? "" : cur));
+  };
+
+  const retry = (messageId) => {
+    const msg = (messagesByDocId[selectedId] || []).find((m) => m.id === messageId);
+    if (msg) ask(msg.text, messageId);
+  };
+
+  // ---- Session exits ----
+  const leaveTo = (path) => {
+    clearSession();
+    navigate(path, { replace: true });
+  };
+
+  const logout = () => {
+    clearSession();
+    navigate("/login", { replace: true });
     toast.info("Logged out");
   };
 
-  const uploadPdf = async () => {
-    if (!pdf) {
-      toast.info("Choose a PDF to upload");
-      return;
-    }
-    try {
-      setUploading(true);
-      setStatus(null);
-      const fd = new FormData();
-      fd.append("pdf", pdf);
-      const r = await apiClient.post("/upload-pdf", fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      if (r.data.success) {
-        setStatus("ok");
-        setPdf(null);
-        await fetchDocs();
-        const nextDoc = {
-          documentId: r.data.documentId,
-          fileName: r.data.fileName,
-        };
-        setSelected(nextDoc);
-        const sessionId = await createChatSession(nextDoc.documentId);
-        if (sessionId) fetchChats(nextDoc.documentId, sessionId);
-        toast.success("PDF indexed successfully");
-      }
-    } catch (e) {
-      console.log(e);
-      setStatus("fail");
-      toast.error("Upload failed");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const selectDoc = (doc) => {
-    const run = async () => {
-      setDrawerOpen(false);
-      setSelected(doc);
-      setStatus(null);
-      const existingSessionId = sessionByDocId[doc.documentId] || null;
-      setChatSessionId(existingSessionId);
-      const sessionId = await createChatSession(doc.documentId);
-      if (sessionId) fetchChats(doc.documentId, sessionId);
-    };
-    run();
-  };
-
-  const deleteDoc = async (e, doc) => {
-    e.stopPropagation();
-    openConfirm({
-      title: "Delete PDF",
-      message: `Delete "${doc.fileName}"? This cannot be undone.`,
-      confirmLabel: "Delete",
-      onConfirm: async () => {
-        try {
-          setDelId(doc.documentId);
-          await apiClient.delete(`/documents/${doc.documentId}`);
-          if (selected?.documentId === doc.documentId) {
-            setSelected(null);
-            setChatSessionId(null);
-          }
-          if (drawerOpen) setDrawerOpen(false);
-          setSessionByDocId((prev) => {
-            const next = { ...prev };
-            delete next[doc.documentId];
-            return next;
-          });
-          setMessagesByDocId((prev) => {
-            const next = { ...prev };
-            delete next[doc.documentId];
-            return next;
-          });
-          setPendingByDocId((prev) => {
-            const next = { ...prev };
-            delete next[doc.documentId];
-            return next;
-          });
-          setSessionLoadingByDocId((prev) => {
-            const next = { ...prev };
-            delete next[doc.documentId];
-            return next;
-          });
-          await fetchDocs();
-          toast.success("Document deleted");
-        } catch (e) {
-          console.log(e);
-          toast.error("Delete failed");
-        } finally {
-          setDelId(null);
-        }
-      },
-    });
-  };
-
-  const send = async () => {
-    const now = Date.now();
-    let activeDocumentId;
-    if (!message.trim()) {
-      toast.info("Type a question first");
-      return;
-    }
-    if (!selected) {
-      toast.info("Select a document first");
-      return;
-    }
-    if (!chatSessionId) {
-      toast.info("No active chat session");
-      return;
-    }
-    if (isActivePending) return;
-    activeDocumentId = selected.documentId;
-    const lastSendAt = lastSendAtByDocIdRef.current[activeDocumentId] || 0;
-    if (now - lastSendAt < 400) return;
-    try {
-      lastSendAtByDocIdRef.current[activeDocumentId] = now;
-      const q = message;
-      const activeSessionId = chatSessionId;
-      setMessage("");
-      setMessagesByDocId((prev) => {
-        const next = { ...prev };
-        const current = next[activeDocumentId] || [];
-        next[activeDocumentId] = [...current, { role: "user", text: q }];
-        return next;
-      });
-      setPendingByDocId((prev) => ({ ...prev, [activeDocumentId]: true }));
-      const r = await apiClient.post("/ask-pdf", {
-        question: q,
-        documentId: activeDocumentId,
-      });
-      const aiText = r.data?.answer || r.data?.reply || "";
-      if (!aiText) {
-        toast.error("No response from AI");
-        setPendingByDocId((prev) => ({ ...prev, [activeDocumentId]: false }));
-        return;
-      }
-      setMessagesByDocId((prev) => {
-        const next = { ...prev };
-        const current = next[activeDocumentId] || [];
-        next[activeDocumentId] = [...current, { role: "ai", text: aiText }];
-        return next;
-      });
-      setPendingByDocId((prev) => ({ ...prev, [activeDocumentId]: false }));
-
-      apiClient.post("/chat", {
-        documentId: activeDocumentId,
-        chatSessionId: activeSessionId,
-        saveOnly: true,
-        reply: aiText,
-        messages: [
-          { role: "user", text: q },
-          { role: "ai", text: aiText },
-        ],
-      }).catch((err) => {
-        console.log(err);
-        toast.error("Failed to save chat");
-      });
-    } catch (e) {
-      console.log(e);
-      toast.error("Failed to get response");
-    } finally {
-      if (activeDocumentId) {
-        setPendingByDocId((prev) => ({ ...prev, [activeDocumentId]: false }));
-      }
-    }
-  };
-
-  const onKey = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
-  };
-
   return (
-    <>
-      <Theme />
-      <div className={`shell ${drawerOpen ? "drawer-open" : ""}`}>
-        {/* TOPBAR */}
-        <header className="topbar">
-          <div style={{ display: "flex", alignItems: "center" }}>
-            <span className="logo">✦ AskMyPDF</span>
-            {/* <span className="logo-sub">RAG · PDF</span> */}
-          </div>
-          <button
-            className="drawer-toggle"
-            onClick={() => setDrawerOpen((prev) => !prev)}
-            type="button"
-          >
-            PDFs
-          </button>
-          <div className="top-right">
-            <span className="live-dot" /> gemini-embedding-2 · mongodb atlas
-          </div>
-        </header>
+    <div className={`home${drawerOpen ? " home-drawer-open" : ""}`}>
+      <Topbar
+        user={user}
+        isGuest={isGuest}
+        drawerOpen={drawerOpen}
+        drawerToggleRef={drawerToggleRef}
+        onToggleDrawer={() => setDrawerOpen((v) => !v)}
+        onLogout={logout}
+        onSignup={() => leaveTo("/signup")}
+      />
 
-        {drawerOpen && (
-          <button
-            className="drawer-overlay"
-            onClick={() => setDrawerOpen(false)}
-            type="button"
-            aria-label="Close sidebar"
-          />
-        )}
+      {drawerOpen && <div className="drawer-overlay" onClick={() => setDrawerOpen(false)} aria-hidden="true" />}
 
-        {/* SIDEBAR */}
-        <aside className="sidebar">
-          <div className="up-section">
-            <p className="sec-label">Upload PDF</p>
-            <div className="drop">
-              <input
-                type="file"
-                accept=".pdf"
-                onChange={(e) => {
-                  setPdf(e.target.files[0] || null);
-                  setStatus(null);
-                }}
-              />
-              <span className="drop-ico">📄</span>
-              {pdf ? (
-                <div className="drop-name">{pdf.name}</div>
-              ) : (
-                <div className="drop-txt">
-                  Click to choose a PDF
-                  <br />
-                  or drop it here
-                </div>
-              )}
-            </div>
+      <Sidebar
+        id="sidebar"
+        asideRef={sidebarRef}
+        isGuest={isGuest}
+        demo={demo}
+        documents={documents}
+        loading={docsLoading}
+        selectedId={selectedId}
+        pendingByDocId={pendingByDocId}
+        deletingId={deletingId}
+        onSelect={selectDoc}
+        onDelete={requestDelete}
+        onUploaded={handleUploaded}
+        onUploadLimit={() => applyDemo({ uploadsUsed: demo?.uploadLimit ?? 1 })}
+        onSignup={() => leaveTo("/signup")}
+      />
 
-            {status === "ok" && (
-              <span className="spill ok">
-                {" "}
-                <span className="sd" /> Indexed successfully
-              </span>
-            )}
-            {status === "fail" && (
-              <span className="spill fail">
-                {" "}
-                <span className="sd" /> Upload failed
-              </span>
-            )}
-            {uploading && (
-              <span className="spill busy">
-                {" "}
-                <span className="sd blink" /> Processing chunks…
-              </span>
-            )}
+      <ChatPane
+        selected={selected}
+        booting={docsLoading}
+        messages={activeMessages}
+        pending={activePending}
+        sessionLoading={activeSessionLoading}
+        isGuest={isGuest}
+        demo={demo}
+        limitReached={limitReached}
+        canClear={!!selected && !activeSessionLoading && (activeMessages?.length || 0) > 0 && !activePending}
+        message={message}
+        onMessageChange={setMessage}
+        onSend={send}
+        onAsk={ask}
+        onRetry={retry}
+        onClear={requestClear}
+        onSignup={() => leaveTo("/signup")}
+      />
 
-            <button
-              className="up-btn"
-              onClick={uploadPdf}
-              disabled={!pdf || uploading}
-            >
-              {uploading ? "Uploading…" : "↑ Upload & Index"}
-            </button>
-          </div>
-
-          <div className="docs-section">
-            <div className="docs-head">
-              <span className="sec-label" style={{ marginBottom: 0 }}>
-                Your PDFs
-              </span>
-              <button
-                className="refresh"
-                onClick={fetchDocs}
-                disabled={docsLoad}
-                title="Refresh"
-              >
-                {docsLoad ? "…" : "↻"}
-              </button>
-            </div>
-            <div className="doc-list">
-              {documents.length === 0 && !docsLoad && (
-                <div className="doc-empty">
-                  <span className="doc-empty-icon">🗂</span>
-                  No documents yet.
-                  <br />
-                  Upload a PDF above.
-                </div>
-              )}
-              {documents.map((doc) => (
-                <div
-                  key={doc.documentId}
-                  className={`doc-row ${selected?.documentId === doc.documentId ? "active" : ""}`}
-                  onClick={() => selectDoc(doc)}
-                >
-                  <span className="doc-ico">📄</span>
-                  <div className="doc-info">
-                    <div className="doc-name" title={doc.fileName}>
-                      {doc.fileName}
-                    </div>
-                    <div className="doc-meta">
-                      {doc.totalChunks} chunks · {fmtDate(doc.createdAt)}
-                    </div>
-                  </div>
-                  {pendingByDocId[doc.documentId] && (
-                    <span className="pending-badge">Answering</span>
-                  )}
-                  <button
-                    className="del"
-                    onClick={(e) => deleteDoc(e, doc)}
-                    disabled={deletingId === doc.documentId}
-                    title="Delete"
-                  >
-                    {deletingId === doc.documentId ? "…" : "✕"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="user-card">
-            <div className="user-text">
-              <span className="user-label">Welcome</span>
-              <span className="user-name">{userName}</span>
-            </div>
-            <button className="logout-btn" onClick={handleLogout}>
-              Logout
-            </button>
-          </div>
-        </aside>
-
-        {/* CHAT */}
-        <main className="chat">
-          <div className="chat-hdr">
-            <div>
-              {selected ? (
-                <span className="chat-hdr-pill">📄 {selected.fileName}</span>
-              ) : (
-                <span className="chat-hdr-none">
-                  Select a document to start chatting
-                </span>
-              )}
-            </div>
-            <div className="chat-actions">
-              {isActiveSessionLoading && (
-                <span className="chat-hdr-none">Loading session…</span>
-              )}
-              <button
-                className="clear-chat"
-                onClick={clearChat}
-                disabled={activeMessages.length === 0 || isActiveSessionLoading}
-              >
-                Clear Chat
-              </button>
-            </div>
-          </div>
-
-          {activeMessages.length === 0 && isActivePending ? (
-            <div className="msgs skeleton-state">
-              <div className="sk-row">
-                <div className="sk-pill" />
-                <div className="sk-line w-60" />
-                <div className="sk-line w-80" />
-              </div>
-              <div className="sk-row align-right">
-                <div className="sk-pill" />
-                <div className="sk-line w-70" />
-                <div className="sk-line w-50" />
-              </div>
-              <div className="sk-row">
-                <div className="sk-pill" />
-                <div className="sk-line w-40" />
-                <div className="sk-line w-75" />
-              </div>
-            </div>
-          ) : activeMessages.length === 0 ? (
-            <div className="msgs empty-state">
-              <div className="empty-glow">✦</div>
-              <div className="empty-title">
-                {selected
-                  ? `Ask anything about\n"${selected.fileName}"`
-                  : "Open a PDF.\nAsk anything."}
-              </div>
-              <div className="empty-sub">
-                {selected
-                  ? "Answers come only from your document · Powered by Gemini"
-                  : "Upload a PDF or select one from the sidebar\nto start your RAG conversation"}
-              </div>
-            </div>
-          ) : (
-            <div className="msgs">
-              {activeMessages.map((msg, i) => (
-                <div key={i} className={`mw ${msg.role}`}>
-                  <div className={`av ${msg.role}`}>
-                    {msg.role === "user" ? "You" : "AI"}
-                  </div>
-                  <div className={`bbl ${msg.role}`}>{msg.text}</div>
-                </div>
-              ))}
-              {isActivePending && (
-                <div className="mw ai">
-                  <div className="av ai">AI</div>
-                  <div className="bbl ai">
-                    <div className="dots">
-                      <span />
-                      <span />
-                      <span />
-                    </div>
-                  </div>
-                </div>
-              )}
-              <div ref={endRef} />
-            </div>
-          )}
-
-          <div className="inp-row">
-            <div className="inp-wrap">
-              <textarea
-                rows={1}
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={onKey}
-                placeholder={
-                  selected
-                    ? `Ask about "${selected.fileName}"… (Enter to send)`
-                    : "Select a document first…"
-                }
-                disabled={!selected || isActivePending || isActiveSessionLoading}
-              />
-            </div>
-            <button
-              className="send"
-              onClick={send}
-              disabled={!message.trim() || !selected || isActivePending || isActiveSessionLoading}
-              title="Send"
-            >
-              ➤
-            </button>
-          </div>
-        </main>
-      </div>
-
-      {confirmState.open && (
-        <div className="modal-backdrop" onClick={closeConfirm}>
-          <div
-            className="modal-card"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-label={confirmState.title}
-          >
-            <div className="modal-kicker">Confirmation</div>
-            <div className="modal-title">{confirmState.title}</div>
-            <div className="modal-body">{confirmState.message}</div>
-            <div className="modal-actions">
-              <button className="modal-btn ghost" onClick={closeConfirm}>
-                Cancel
-              </button>
-              <button
-                className="modal-btn danger"
-                onClick={async () => {
-                  const handler = confirmState.onConfirm;
-                  closeConfirm();
-                  if (handler) await handler();
-                }}
-              >
-                {confirmState.confirmLabel}
-              </button>
-            </div>
-          </div>
-        </div>
+      {confirm && (
+        <ConfirmModal
+          title={confirm.title}
+          message={confirm.message}
+          confirmLabel={confirm.confirmLabel}
+          busyLabel={confirm.busyLabel}
+          onCancel={() => setConfirm(null)}
+          onConfirm={async () => {
+            await confirm.onConfirm();
+            setConfirm(null);
+          }}
+        />
       )}
-    </>
+
+      {limitModalOpen && (
+        <DemoLimitModal
+          onSignup={() => leaveTo("/signup")}
+          onLogin={() => leaveTo("/login")}
+          onClose={() => setLimitModalOpen(false)}
+        />
+      )}
+    </div>
   );
 }
